@@ -1,13 +1,20 @@
 # @alexzhaosheng/huko-engine
 
-The shared agent runtime behind huko — LLM protocol adapters, task
-loop, tool framework, safety evaluator, skill loader, prompt
-assembler, persistence interfaces. Designed to be embedded by any
-host: the huko CLI and the app-studio host both run on it.
+Embeddable agent runtime — LLM protocol adapters, task loop, tool
+framework, safety policy evaluator, skill loader, prompt assembler,
+persistence. Drop it into any Node host process to run capable
+agents through a small, opinionated facade.
 
 This README is a usage guide. For the design rationale see
 [`docs/public-api-facade.md`](docs/public-api-facade.md); for
 package-internal rules see [`CLAUDE.md`](CLAUDE.md).
+
+A reference host implementation lives in the
+[**huko-cli**](https://github.com/alexzhaosheng/huko) repo — its
+`packages/huko-cli/` shows a full daemon + CLI built on this engine
+(orchestrator, scheduler, daemon transport, web UI, browser tool,
+file-share, etc.). Reach for it when you want a worked example of
+how each engine seam gets wired into a real host.
 
 ---
 
@@ -37,6 +44,10 @@ const agent = engine.createAgent({
     thinkLevel: "off",
     contextWindow: 128_000,
   },
+  // 13 foundational tools (bash, glob, grep, plan, message, ...)
+  // are auto-registered. Allow-list whichever ones this agent
+  // should see — omit `tools` to expose none.
+  tools: { allow: ["plan", "message", "bash", "read_file"] },
 });
 
 const result = await agent.runTurn({ message: "Hello, who are you?" });
@@ -45,25 +56,24 @@ console.log(result.finalResult);
 await engine.close();
 ```
 
-That's the embedding-host shape — one HTTP request → one
-`runTurn` → one JSON response. Daemons / orchestrators with live
-streaming, mid-flight stop, and operator response routing reach for
-`startTurn` instead (see [Daemon patterns](#daemon-patterns)).
+That's it — three things the host has to supply (`persistence`,
+`defaultProvider`, `tools.allow`); everything else is defaults the
+engine ships:
 
-`createHukoEngine` is async because it runs the **automatic
-orphan-recovery scan** during construction. If a previous process
-left tasks in non-terminal state (running, waiting for reply,
-waiting for approval), engine marks them failed and injects
-synthetic `tool_result` rows for any dangling tool_calls so the next
-conversation continuation on the same session doesn't 400 on strict
-providers. The scan is invisible by default; pass
-`onOrphanRecovered: (record) => ...` in options for visibility.
-Persistence backends that can't survive a crash (e.g.
-`MemoryAgentPersistence`) skip the scan silently.
+| Default | What it gets you |
+|--------|-----------------|
+| Foundational tools auto-registered | bash / glob / grep / plan / message / read_file / write_file / edit_file / delete_file / move_file / list_dir / web_fetch / web_search are all resolvable by name. Allow-list to expose. Opt out with `foundationalTools: false`. |
+| `defaultBestPracticesProvider` | The plan tool's `tool_result` grows an "Expert Checklist" block for the 4 bundled capabilities (`coding`, `writing`, `research`, `analysis`) when an agent's plan phase tags one. Opt out with `hostHooks: { bestPracticesProvider: null }`. |
+| Automatic orphan-recovery scan | At construction, engine scans persistence for tasks left in non-terminal state from a crashed previous run; marks them failed; injects synthetic `tool_result` rows for any dangling tool_calls so the next conversation continuation on the same session doesn't 400 on strict providers. Silent unless host passes `onOrphanRecovered`. `MemoryAgentPersistence` skips the scan. |
 
-For tests or scripts that don't need recovery,
+Daemons / orchestrators with live streaming, mid-flight stop, and
+operator response routing reach for `startTurn` instead of
+`runTurn` — see [Daemon patterns](#daemon-patterns).
+
+`createHukoEngine` is async because of the orphan-recovery scan
+above. For tests or scripts that don't need recovery,
 `createHukoEngineSync(options)` constructs the engine without
-awaiting the scan.
+awaiting the scan (defaults still apply).
 
 ---
 
@@ -297,18 +307,47 @@ description + hint — they're attached to the same record. When a
 tool gets filtered out (not in `agent.tools.allow`), its hint goes
 with it.
 
-### Foundational tools
+### Foundational tools (auto-registered by default)
 
-The engine ships foundational tools (bash, glob, grep, edit_file,
-write_file, plan, message, ...) registered in a process-global
-registry via `src/task/tools/index.ts`. The facade's tool resolver
-falls back to that global registry, so hosts that side-effect import
-those tools keep working without re-registering each one on the
-engine instance.
+The engine ships 13 foundational tools — bash, glob, grep, list_dir,
+read_file, write_file, edit_file, delete_file, move_file, plan,
+message, web_fetch, web_search — and registers them on the engine
+instance automatically at construction. No imports, no wiring; just
+allow-list whichever ones each agent should see:
 
 ```ts
-import "@alexzhaosheng/huko-engine/task/tools/index.js"; // register all built-ins
+const engine = await createHukoEngine({ persistence });
+// All 13 are now resolvable by name; pick what to expose:
+const agent = engine.createAgent({
+  name: "...", sessionId, defaultProvider,
+  tools: { allow: ["bash", "grep", "read_file"] },
+});
 ```
+
+Opt out when the host wants to replace a foundational tool with
+its own (e.g. a sandboxed `bash`):
+
+```ts
+const engine = await createHukoEngine({
+  persistence,
+  foundationalTools: false,
+});
+engine.registerTool({ name: "bash", ..., handler: sandboxedBash });
+// Optionally register the rest manually:
+import {
+  registerFoundationalTools,
+  FOUNDATIONAL_TOOL_REGISTRATIONS,
+} from "@alexzhaosheng/huko-engine";
+// either register all of them, or filter the array:
+for (const reg of FOUNDATIONAL_TOOL_REGISTRATIONS) {
+  if (reg.name !== "bash") engine.registerTool(reg);
+}
+```
+
+A tool being registered on the engine doesn't expose it to any LLM —
+exposure is controlled per-agent via `tools.allow`. So the "all
+foundational tools registered by default" stance is safe by default
+even though `bash` is in there.
 
 ### Rich tool surface materialization
 
@@ -528,75 +567,88 @@ expanded before the handler runs.
 
 ## Host hooks
 
-Four cross-cutting concerns the engine consults — install through
-the constructor instead of monkey-patching:
+Cross-cutting concerns the engine consults — install through the
+constructor instead of monkey-patching. **All four are optional**:
+omit any of them to take the default (or the no-op equivalent).
 
 ```ts
 const engine = await createHukoEngine({
   persistence,
   hostHooks: {
     // Engine-eligible config slice (safety rules, llm timeouts,
-    // compaction thresholds, ...). Engine modules read this via
-    // getEngineConfig() throughout.
+    // compaction thresholds, ...). Pipeline + tool code read it
+    // via `ctx.engine.config` per-instance. Omit → DEFAULT_ENGINE_CONFIG.
     config: projectEngineConfig(hostConfig),
 
-    // Tools (bash/glob/grep/...) fall back to this when neither call
-    // args nor TaskContext.cwd supplies one. Engine code never reads
-    // process.cwd() itself.
+    // Working-directory fallback for tools (bash/glob/grep/...) when
+    // neither call args nor TaskContext.cwd supplies one. Engine code
+    // never reads `process.cwd()` itself. Omit → defaults to ".".
     defaultCwd: process.cwd(),
 
     // Safety policy invokes this when the operator picks "always
     // allow" on a tool decision — typically writes back to the host's
-    // config files. Returns void; persistence failures are
-    // non-fatal (the tool still runs, the rule just isn't durable).
+    // config files. Persistence failures are non-fatal. Omit → no
+    // persistence (the tool still runs, the rule just isn't durable).
     safetyRulePersister: (scope, cwd, toolName, bucket, pattern) => {
       appendRule(scope, cwd, toolName, bucket, pattern);
     },
 
-    // Plan tool invokes this to inject role-flavoured best-practices
-    // into a plan(update) tool_result. Return null when no role
-    // matches the phase. Engine ships a ready-to-use default with
-    // the four foundational capabilities — see below.
-    bestPracticesProvider: defaultBestPracticesProvider,
+    // Plan tool invokes this when an agent's phase tags a capability.
+    // Omit → `defaultBestPracticesProvider` (auto-installed; built-in
+    // 4 capabilities). Pass `null` to opt out entirely. Pass your
+    // own function to override (see "Built-in best practices" below
+    // for the building blocks).
+    // bestPracticesProvider: defaultBestPracticesProvider,  // implicit
   },
 });
 ```
 
-Today these install into engine module-level state (effectively
-"last engine wins" — fine for single-engine processes, which is
-every current huko host). A future round threads them through
-`TaskContext` so multiple engines can coexist with different hooks.
+The four `hostHooks` fields live as **per-engine state** —
+`ctx.engine.{config,defaultCwd,safetyRulePersister,bestPracticesProvider}`
+inside pipeline / tool code. Two engines in one process can have
+different config / safety persister / best-practices provider without
+overwriting each other.
 
-### Built-in best practices
+(The engine constructor also installs the same values into
+module-level globals for back-compat with transitional callsites
+that build a `TaskContext` without an engine handle. New code paths
+always read the per-instance state; the globals will go away once
+every transitional callsite migrates.)
+
+### Built-in best practices (auto-installed by default)
 
 Engine bundles four foundational capabilities — `coding`, `writing`,
 `research`, `analysis` — as the in-memory `BUILT_IN_BEST_PRACTICES`
-map. Mirrors the `SqliteAgentPersistence` pattern: a ready-to-use
-convenience for hosts that don't have their own checklist registry.
-
-Plug-and-play:
-
-```ts
-import {
-  createHukoEngine,
-  defaultBestPracticesProvider,
-  MemoryAgentPersistence,
-} from "@alexzhaosheng/huko-engine";
-
-const engine = await createHukoEngine({
-  persistence: new MemoryAgentPersistence(),
-  hostHooks: {
-    bestPracticesProvider: defaultBestPracticesProvider,
-  },
-});
-```
+map and installs the matching `defaultBestPracticesProvider`
+automatically.
 
 When the LLM tags a plan phase with `capabilities: ["coding"]`, the
 plan tool's `tool_result` grows a per-phase Expert Checklist block
-pulled from the bundled markdown.
+pulled from the bundled markdown. No wiring required:
 
-Hosts that want richer behaviour (project-local override files,
-remote registries, multi-tenant rules) compose with the building
+```ts
+const engine = await createHukoEngine({ persistence });
+// plan(phases=[{ ..., capabilities: ["coding"] }]) → checklist auto-attached
+```
+
+Override or opt out:
+
+```ts
+// Override with your own provider (e.g. filesystem layers on top):
+const engine = await createHukoEngine({
+  persistence,
+  hostHooks: { bestPracticesProvider: myProvider },
+});
+
+// Opt out entirely:
+const engine = await createHukoEngine({
+  persistence,
+  hostHooks: { bestPracticesProvider: null },
+});
+```
+
+For hosts that want richer behaviour (project-local override files,
+remote registries, multi-tenant rules), compose with the building
 blocks:
 
 | Export | What it does |
@@ -606,12 +658,12 @@ blocks:
 | `resolveBestPracticeBody(raw, max?)` | Strip frontmatter → prefer section → cap → return body or null |
 | `resolveBuiltInBestPractice(name, max?)` | Same pipeline, sourced from the bundled map |
 | `formatBestPracticesInjection(phaseId, title, entries)` | Canonical header + per-capability blocks; returns the final string |
-| `defaultBestPracticesProvider` | Ready-to-use `BestPracticesProvider` walking the bundled map only |
+| `defaultBestPracticesProvider` | Ready-to-use `BestPracticesProvider` walking the bundled map only (the one installed by default) |
 
-Example: cli wraps the engine map with two filesystem layers
-(`<cwd>/.huko/roles/<name>.md` → `~/.huko/roles/<name>.md` →
-built-in) — see huko-cli's `src/task/best-practices.ts` for
-the ~50-line wrapper.
+The [huko-cli](https://github.com/alexzhaosheng/huko) repo's
+`packages/huko-cli/src/task/best-practices.ts` is a worked example
+of wrapping the engine helpers with project + user filesystem
+override layers (~50 lines total).
 
 ---
 
@@ -722,6 +774,22 @@ facade barrel instead.
 `@internal` is a documentation tag, not a runtime check — imports
 still work. The tag signals that the surface is engine-internal and
 may shift between releases without a deprecation cycle.
+
+---
+
+## See also
+
+- **[huko-cli](https://github.com/alexzhaosheng/huko)** —
+  reference host implementation. The cli daemon, web UI, CLI
+  formatters, scheduler, scrubber, browser tool, file-share tool,
+  and the orchestrator wiring around `engine.startTurn` /
+  `agent.respondToAsk` are all worth reading if you're embedding
+  the engine into a daemon-style product.
+- **[docs/public-api-facade.md](docs/public-api-facade.md)** —
+  why the facade looks like this, the design tradeoffs, and the
+  migration steps the engine went through to reach this shape.
+- **[docs/RELEASE.md](docs/RELEASE.md)** — release process for
+  this package (tag-triggered npm publish with provenance).
 
 ---
 

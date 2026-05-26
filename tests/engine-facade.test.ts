@@ -120,10 +120,22 @@ function assistantOnlyResponse(content: string): StreamScript {
 
 // ─── Tests ──────────────────────────────────────────────────────────────────
 
+// These tests exercise the per-instance registry mechanics — counts
+// and isolation. `foundationalTools: false` opts out of the default
+// auto-registration so the assertions can deal with clean slates.
+// (Default behaviour — engine ships the 13 foundational tools pre-
+// registered — is covered indirectly by the runTurn tests below.)
+
 describe("createHukoEngine — instance shape", () => {
   it("registerTool isolates two engines from each other", () => {
-    const engineA = createHukoEngineSync({ persistence: new MemoryAgentPersistence() });
-    const engineB = createHukoEngineSync({ persistence: new MemoryAgentPersistence() });
+    const engineA = createHukoEngineSync({
+      persistence: new MemoryAgentPersistence(),
+      foundationalTools: false,
+    });
+    const engineB = createHukoEngineSync({
+      persistence: new MemoryAgentPersistence(),
+      foundationalTools: false,
+    });
 
     engineA.registerTool({
       name: "shared_name",
@@ -147,7 +159,10 @@ describe("createHukoEngine — instance shape", () => {
   });
 
   it("registerTool throws when the same name is registered twice on one engine", () => {
-    const engine = createHukoEngineSync({ persistence: new MemoryAgentPersistence() });
+    const engine = createHukoEngineSync({
+      persistence: new MemoryAgentPersistence(),
+      foundationalTools: false,
+    });
     engine.registerTool({
       name: "dup",
       description: "first",
@@ -165,7 +180,10 @@ describe("createHukoEngine — instance shape", () => {
   });
 
   it("listTools filter narrows by allow-list", () => {
-    const engine = createHukoEngineSync({ persistence: new MemoryAgentPersistence() });
+    const engine = createHukoEngineSync({
+      persistence: new MemoryAgentPersistence(),
+      foundationalTools: false,
+    });
     for (const name of ["a", "b", "c"]) {
       engine.registerTool({
         name,
@@ -177,6 +195,31 @@ describe("createHukoEngine — instance shape", () => {
     assert.equal(engine.listTools().length, 3);
     assert.equal(engine.listTools({ allow: ["a"] }).length, 1);
     assert.equal(engine.listTools({ allow: ["a", "c"] }).length, 2);
+  });
+
+  it("foundational tools are registered by default", () => {
+    const engine = createHukoEngineSync({
+      persistence: new MemoryAgentPersistence(),
+    });
+    // The 13 bundled tools should be there out of the box.
+    const names = engine.listTools().map((t) => t.name).sort();
+    for (const expected of [
+      "bash",
+      "glob",
+      "grep",
+      "plan",
+      "message",
+      "read_file",
+      "write_file",
+      "edit_file",
+      "delete_file",
+      "move_file",
+      "list_dir",
+      "web_fetch",
+      "web_search",
+    ]) {
+      assert.ok(names.includes(expected), `expected default tool ${expected} to be registered`);
+    }
   });
 });
 

@@ -93,6 +93,8 @@ import {
   setBestPracticesProvider,
   type BestPracticesProvider,
 } from "./task/tools/best-practices-provider.js";
+import { defaultBestPracticesProvider } from "./task/tools/best-practices-built-in.js";
+import { registerFoundationalTools } from "./task/tools/foundational.js";
 
 // ─── Provider ───────────────────────────────────────────────────────────────
 
@@ -139,8 +141,18 @@ export type HukoEngineHostHooks = {
   safetyRulePersister?: SafetyRulePersister | null;
   /**
    * Callback the plan tool invokes to inject role-flavoured
-   * best-practices into a `plan(update)` tool_result. Pass `null` to
-   * clear an installed one.
+   * best-practices into a `plan(update)` tool_result.
+   *
+   * Behaviour by value:
+   *   - `undefined` (omitted) — engine uses `defaultBestPracticesProvider`
+   *     out of the box: the four bundled capabilities (`coding`,
+   *     `writing`, `research`, `analysis`) automatically inject
+   *     when a plan phase tags them. No wiring required.
+   *   - explicit function — engine uses your provider. Wrap
+   *     `defaultBestPracticesProvider` if you want filesystem
+   *     overrides on top of the bundled defaults.
+   *   - explicit `null` — engine injects nothing. Use this to
+   *     opt out of best-practices entirely.
    */
   bestPracticesProvider?: BestPracticesProvider | null;
 };
@@ -150,6 +162,25 @@ export type HukoEngineOptions = {
   persistence: AgentPersistence;
   /** Host integration hooks; see HukoEngineHostHooks. */
   hostHooks?: HukoEngineHostHooks;
+  /**
+   * Register the 13 foundational tools (bash, glob, grep, list-dir,
+   * read-file, write-file, edit-file, delete-file, move-file, plan,
+   * message, web-fetch, web-search) on this engine instance.
+   *
+   *   - `true` (default) — engine calls `registerFoundationalTools(this)`
+   *     during construction. Tools become resolvable by name; they
+   *     ONLY land in an agent's LLM surface when the agent's
+   *     `tools.allow` lists them, so this default is safe by default.
+   *   - `false` — skip registration. Use this when the host wants
+   *     to substitute its own implementation of a foundational
+   *     tool (e.g. a sandboxed `bash`) and register a subset
+   *     manually.
+   *
+   * Registering twice (auto + then manual `registerFoundationalTools`)
+   * throws on duplicate names; if you want a custom set, opt out and
+   * pick what you register.
+   */
+  foundationalTools?: boolean;
   /**
    * Optional per-record callback fired during the engine's automatic
    * orphan-recovery scan at construction time. Hosts use it for
@@ -407,7 +438,13 @@ export class HukoEngine implements EngineHandle {
     this.config = options.hostHooks?.config ?? DEFAULT_ENGINE_CONFIG;
     this.defaultCwd = options.hostHooks?.defaultCwd ?? ".";
     this.safetyRulePersister = options.hostHooks?.safetyRulePersister ?? null;
-    this.bestPracticesProvider = options.hostHooks?.bestPracticesProvider ?? null;
+    // bestPracticesProvider: distinguish "not supplied" from explicit
+    // opt-out. `undefined` → default (built-in 4 capabilities); `null`
+    // → no injection at all; explicit function → use that.
+    this.bestPracticesProvider =
+      options.hostHooks?.bestPracticesProvider === undefined
+        ? defaultBestPracticesProvider
+        : options.hostHooks.bestPracticesProvider;
 
     // Module-level globals: installed for back-compat with transitional
     // callers (engine-demo script, a couple of low-level tests that
@@ -1278,21 +1315,33 @@ export class HukoAgent {
 
 /**
  * Construct a `HukoEngine` and run any first-boot housekeeping the
- * engine owns — currently the orphan-recovery scan. Async because
- * recovery touches persistence; await this once at host bootstrap
- * and hand the resolved engine to the rest of the host.
+ * engine owns — currently the orphan-recovery scan + foundational
+ * tool registration. Async because recovery touches persistence;
+ * await this once at host bootstrap and hand the resolved engine to
+ * the rest of the host.
  *
- * The scan is automatic + invisible by default. Persistence
- * implementations without `listNonTerminalTasks` (MemoryAgentPersistence,
- * stub backends, anything that can't survive a crash) skip the scan
- * silently. SqliteAgentPersistence + cli's adapter implement the
- * methods and get full recovery. Hosts that want visibility pass
- * `onOrphanRecovered` in options.
+ * Defaults applied at construction (override via options):
+ *   - `foundationalTools: true` — engine registers the 13 bundled
+ *     tools (bash / glob / grep / plan / message / ...) so hosts
+ *     can allow-list them per agent without separate wiring. Opt out
+ *     with `foundationalTools: false`.
+ *   - `hostHooks.bestPracticesProvider: defaultBestPracticesProvider`
+ *     when host doesn't supply one. Explicit `null` opts out;
+ *     explicit function overrides.
+ *
+ * Automatic orphan-recovery scan: persistence implementations without
+ * `listNonTerminalTasks` (MemoryAgentPersistence, stub backends,
+ * anything that can't survive a crash) skip the scan silently.
+ * SqliteAgentPersistence implements the methods and gets full
+ * recovery. Hosts that want visibility pass `onOrphanRecovered`.
  */
 export async function createHukoEngine(
   options: HukoEngineOptions,
 ): Promise<HukoEngine> {
   const engine = new HukoEngine(options);
+  if (options.foundationalTools !== false) {
+    registerFoundationalTools(engine);
+  }
   await engine.runOrphanRecovery();
   return engine;
 }
@@ -1307,9 +1356,16 @@ export async function createHukoEngine(
  * Production hosts should prefer the async factory; missing
  * recovery is a real correctness gap when the persistence backend
  * outlives the process.
+ *
+ * Foundational-tools registration + bestPracticesProvider default
+ * still apply (they don't need async).
  */
 export function createHukoEngineSync(options: HukoEngineOptions): HukoEngine {
-  return new HukoEngine(options);
+  const engine = new HukoEngine(options);
+  if (options.foundationalTools !== false) {
+    registerFoundationalTools(engine);
+  }
+  return engine;
 }
 
 // Re-export recovery types so hosts using `onOrphanRecovered` can
