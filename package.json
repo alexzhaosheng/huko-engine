@@ -1,6 +1,6 @@
 {
   "name": "@alexzhaosheng/huko-engine",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Agent runtime — facade + LLM protocol + task loop + tool framework + safety policy + skill loader + prompt assembler + persistence. Embeddable in any host process.",
   "type": "module",
   "license": "MIT",

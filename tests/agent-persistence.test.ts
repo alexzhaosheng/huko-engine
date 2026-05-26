@@ -40,11 +40,13 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+// Relative import — package-name self-resolution would route through
+// exports → dist/, which doesn't exist before `npm run build`.
 import {
   MemoryAgentPersistence,
   SqliteAgentPersistence,
   type AgentPersistence,
-} from "@alexzhaosheng/huko-engine/persistence/index.js";
+} from "../src/persistence/index.js";
 
 type Factory = {
   name: string;

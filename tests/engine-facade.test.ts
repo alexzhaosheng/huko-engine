@@ -23,11 +23,14 @@
 import { afterEach, describe, it } from "node:test";
 import { strict as assert } from "node:assert";
 
+// Relative imports — same source as the package barrel, but tests
+// don't need dist/ to exist (package-name resolution would route
+// through exports → dist/, which is only built by `npm run build`).
 import {
   createHukoEngineSync,
   MemoryAgentPersistence,
   type Provider,
-} from "@alexzhaosheng/huko-engine";
+} from "../src/index.js";
 
 // ─── Fetch stubbing ─────────────────────────────────────────────────────────
 
