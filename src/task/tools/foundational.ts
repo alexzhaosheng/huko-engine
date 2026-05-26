@@ -29,6 +29,8 @@ import type {
   EngineToolRegistration,
 } from "../../facade.js";
 
+import { registerServerTool, getTool } from "./registry.js";
+
 import { messageDefinition, messageHandler } from "./message.js";
 import { planDefinition, planHandler } from "./plan.js";
 import { webFetchDefinition, webFetchHandler } from "./web-fetch.js";
@@ -79,5 +81,25 @@ export const FOUNDATIONAL_TOOL_REGISTRATIONS: readonly EngineToolRegistration[] 
 export function registerFoundationalTools(engine: HukoEngine): void {
   for (const reg of FOUNDATIONAL_TOOL_REGISTRATIONS) {
     engine.registerTool(reg);
+  }
+}
+
+/**
+ * Register every foundational tool into the process-global registry.
+ * Idempotent: skips tools already present (lets tests / multiple
+ * hosts call this safely).
+ *
+ * Use this when a host has code paths that read the global registry
+ * directly (cli's legacy `getTool` / `getToolsForLLM` consumers) and
+ * needs the 13 tools populated before those paths run. Hosts that
+ * only work through engine instances do NOT need this — engine.registerTool
+ * + the resolveTool global fallback covers them.
+ */
+export function registerFoundationalToolsGlobally(): void {
+  for (const reg of FOUNDATIONAL_TOOL_REGISTRATIONS) {
+    if (getTool(reg.name) === undefined) {
+      const { handler, ...definition } = reg;
+      registerServerTool(definition, handler);
+    }
   }
 }
