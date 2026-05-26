@@ -29,10 +29,15 @@
 import { describe, it } from "node:test";
 import { strict as assert } from "node:assert";
 
+// Tests sit in the same workspace as the engine source; reach the
+// internal assembler via a relative path. The published package's
+// exports map omits `internal/*` (npm consumers can't import it),
+// so the package-name form `@alexzhaosheng/huko-engine/internal/...`
+// is intentionally rejected at the export boundary.
 import {
   assembleSystemPrompt,
   type AssembleSystemPromptInput,
-} from "@alexzhaosheng/huko-engine/internal/prompt/assemble.js";
+} from "../src/internal/prompt/assemble.js";
 
 const SETUP_ASSISTANT_BLOCK = `<setup_assistant>
 - Only configure huko via \`huko ...\` bash commands.
