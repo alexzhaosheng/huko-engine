@@ -6,9 +6,9 @@
  * In-memory persistence: the conversation lives only as long as the
  * process.
  *
- * Run:
+ * From the repo root, after `npm install`:
  *
- *   OPENROUTER_API_KEY=sk-or-... npx tsx example/cli-chat/main.ts
+ *   OPENROUTER_API_KEY=sk-or-... npm run example:cli-chat
  *
  * Override the model with `MODEL=...` (any OpenRouter slug).
  */

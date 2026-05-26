@@ -12,9 +12,17 @@ every default tool turned on. ~55 lines of TypeScript.
 
 ## Run
 
+From the engine repo root (the directory with `package.json`), after
+`npm install`:
+
 ```bash
-OPENROUTER_API_KEY=sk-or-... npx tsx example/cli-chat/main.ts
+OPENROUTER_API_KEY=sk-or-... npm run example:cli-chat
 ```
+
+The npm script handles the relative paths inside `main.ts`; running
+`npx tsx example/cli-chat/main.ts` from inside the `example/cli-chat/`
+directory fails with `ERR_MODULE_NOT_FOUND` because tsx resolves the
+entry path relative to cwd.
 
 Default model: `deepseek/deepseek-v4-pro`. Override with
 `MODEL=<openrouter-slug>` for anything OpenRouter serves.
