@@ -1,0 +1,111 @@
+{
+  "name": "@alexzhaosheng/huko-engine",
+  "version": "0.1.0",
+  "description": "Agent runtime — facade + LLM protocol + task loop + tool framework + safety policy + skill loader + prompt assembler + persistence. Embeddable in any host process.",
+  "type": "module",
+  "license": "MIT",
+  "homepage": "https://github.com/alexzhaosheng/huko-engine",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/alexzhaosheng/huko-engine.git"
+  },
+  "bugs": {
+    "url": "https://github.com/alexzhaosheng/huko-engine/issues"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "//main": "Dev mode (this repo's tests, IDE) reads TS source directly via the exports map. publishConfig.exports below swaps to dist/ on `npm publish` — see https://docs.npmjs.com/cli/v10/configuring-npm/package-json#publishconfig.",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "//exports": "Dev mode keeps the wildcard so tests + scripts can reach every subpath (including src/internal/*). publishConfig.exports enumerates ONLY the public surface — internal kernel modules become unreachable from npm consumers.",
+  "exports": {
+    ".": "./src/index.ts",
+    "./*.js": "./src/*.ts",
+    "./package.json": "./package.json"
+  },
+  "publishConfig": {
+    "main": "./dist/index.js",
+    "types": "./dist/index.d.ts",
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "./persistence/index.js": {
+        "types": "./dist/persistence/index.d.ts",
+        "default": "./dist/persistence/index.js"
+      },
+      "./persistence/agent-persistence.js": {
+        "types": "./dist/persistence/agent-persistence.d.ts",
+        "default": "./dist/persistence/agent-persistence.js"
+      },
+      "./persistence/types.js": {
+        "types": "./dist/persistence/types.d.ts",
+        "default": "./dist/persistence/types.js"
+      },
+      "./prompt/overlay.js": {
+        "types": "./dist/prompt/overlay.d.ts",
+        "default": "./dist/prompt/overlay.js"
+      },
+      "./task/tools/registry.js": {
+        "types": "./dist/task/tools/registry.d.ts",
+        "default": "./dist/task/tools/registry.js"
+      },
+      "./task/tools/best-practices-built-in.js": {
+        "types": "./dist/task/tools/best-practices-built-in.d.ts",
+        "default": "./dist/task/tools/best-practices-built-in.js"
+      },
+      "./task/tools/foundational.js": {
+        "types": "./dist/task/tools/foundational.d.ts",
+        "default": "./dist/task/tools/foundational.js"
+      },
+      "./shared/events.js": {
+        "types": "./dist/shared/events.d.ts",
+        "default": "./dist/shared/events.js"
+      },
+      "./shared/types.js": {
+        "types": "./dist/shared/types.d.ts",
+        "default": "./dist/shared/types.js"
+      },
+      "./llm/types.js": {
+        "types": "./dist/llm/types.d.ts",
+        "default": "./dist/llm/types.js"
+      },
+      "./package.json": "./package.json"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "CLAUDE.md"
+  ],
+  "scripts": {
+    "check": "tsc --noEmit",
+    "test": "node --import tsx --test \"tests/*.test.ts\"",
+    "build": "tsc -p tsconfig.build.json",
+    "prepublishOnly": "npm run check && npm run test && npm run build"
+  },
+  "keywords": [
+    "agent",
+    "ai",
+    "llm",
+    "tool-use",
+    "anthropic",
+    "openai",
+    "task-loop",
+    "huko"
+  ],
+  "dependencies": {
+    "better-sqlite3": "^12.0.0",
+    "iconv-lite": "^0.6.3",
+    "nanoid": "^5.0.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.0",
+    "@types/node": "^22.0.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.9.3"
+  }
+}

@@ -1,0 +1,235 @@
+/**
+ * Tool: message
+ *
+ * The single channel for the assistant to talk to the user.
+ *
+ * Modes:
+ *   - info   — progress updates / acknowledgements; no break
+ *   - ask    — block until user replies; reply text is the tool result
+ *   - result — final deliverable; sets ctx.finalResult and ends the task
+ *
+ * `ask` mode requires the orchestrator to have wired
+ * TaskContext.waitForReply. When the user runs `huko --no-interaction`,
+ * the registry materialises this tool's schema WITHOUT `ask` so the LLM
+ * literally cannot request user input.
+ */
+
+import type {
+  ServerToolDefinition,
+  ServerToolHandler,
+  ToolHandlerResult,
+  ToolMaterializeContext,
+} from "./registry.js";
+import type { TaskContext } from "../../internal/TaskContext.js";
+
+type MessageToolType = "info" | "ask" | "result";
+
+const BASE_DESCRIPTION =
+  "Send messages to interact with the user.\n\n" +
+  "<supported_types>\n" +
+  "- `info`: Inform the user with acknowledgement or progress updates without requiring a response\n" +
+  "- `ask`: Ask the user a question and BLOCK until they reply; the reply is returned as the tool result\n" +
+  "- `result`: Deliver the final result to the user and end the task\n" +
+  "</supported_types>\n\n" +
+  "<instructions>\n" +
+  "- MUST use this tool for any communication with the user instead of plain assistant text\n" +
+  "- NEVER provide direct answers without proper reasoning or prior analysis\n" +
+  "- Actively use `info` to provide progress updates; no reply is needed from the user\n" +
+  "- Use `ask` when you genuinely lack information needed to proceed and the user is the only source. Prefer reading files or running tools first; ask is a last resort.\n" +
+  "- Use `ask` with `options` when the answer is one of a small known set; this lets the UI render a clean choice picker\n" +
+  "- MUST use `result` to present the final deliverable at the end of the task\n" +
+  "- The task ends after a `result` message; the user may ask follow-ups in a new turn\n" +
+  "- Use `result` to respond when the user's message only requires a reply (e.g., simple chat or follow-up questions)\n" +
+  "- When the user explicitly requests to end the task, MUST immediately use `result` to acknowledge and end\n" +
+  "- MUST ensure the work has reached the final phase before sending `result`, unless the user explicitly requests to stop\n" +
+  "- DO NOT send multiple consecutive `info` messages while waiting for missing information — use `ask` instead\n" +
+  "</instructions>\n\n" +
+  "<recommended_usage>\n" +
+  "- Use `info` to acknowledge initial user messages and confirm task start\n" +
+  "- Use `info` to notify the user of progress checkpoints or decisions made\n" +
+  "- Use `ask` when a critical decision genuinely requires the user's input\n" +
+  "- Use `result` to deliver the final answer at the end of the task\n" +
+  "- Use `result` for simple chat replies or follow-up questions that need no further actions\n" +
+  "- Use `result` to end the task when the user explicitly requests it\n" +
+  "</recommended_usage>";
+
+const NON_INTERACTIVE_NOTE =
+  "<non_interactive_mode>\n" +
+  "This task is running non-interactively — the `ask` type is NOT available. Make decisions yourself based on available context, or use `result` to surface a question for the next turn instead of trying to ask in-task.\n" +
+  "</non_interactive_mode>";
+
+const MESSAGE_PROMPT_HINT = [
+  "Talking to the user (`message` tool):",
+  "- Use `message` for ALL user-facing communication. Never reply in plain text.",
+  "- `message(type=info)` — progress / acknowledgement; the task continues without waiting.",
+  "- `message(type=ask)` — block until the user replies; use only when you genuinely need their input.",
+  "- `message(type=result)` — final delivery; ENDS the task. Do not keep talking after.",
+  "- AVOID consecutive info messages without action — after ~3 in a row a system_reminder will tell you to actually run a tool, ask, or deliver.",
+].join("\n");
+
+function buildSchema(ctx: ToolMaterializeContext) {
+  const types: MessageToolType[] = ctx.interactive
+    ? ["info", "ask", "result"]
+    : ["info", "result"];
+  return {
+    type: "object" as const,
+    properties: {
+      type: {
+        type: "string" as const,
+        enum: types,
+        description: "The kind of message to send",
+      },
+      text: {
+        type: "string" as const,
+        description: "The message body / question / final-result text",
+      },
+      options: {
+        type: "array" as const,
+        items: { type: "string" as const },
+        description:
+          "Predefined choices (only for type=ask). When set, the UI renders a picker; the user's reply is one of (or a subset of) these strings.",
+      },
+      selectionType: {
+        type: "string" as const,
+        enum: ["single", "multiple"],
+        description:
+          "Only for type=ask with options: 'single' = pick one (radio), 'multiple' = pick zero or more (checkboxes). Default 'single'.",
+      },
+    },
+    required: ["type", "text"],
+  };
+}
+
+export const messageDefinition: ServerToolDefinition = {
+  name: "message",
+  description: BASE_DESCRIPTION,
+  parameters: buildSchema({ interactive: true, lean: false }),
+  parametersFor: (ctx) => buildSchema(ctx),
+  descriptionFor: (ctx) => (ctx.interactive ? undefined : NON_INTERACTIVE_NOTE),
+  dangerLevel: "safe",
+  promptHint: MESSAGE_PROMPT_HINT,
+};
+
+export const messageHandler: ServerToolHandler = async (args, ctx, callMeta): Promise<ToolHandlerResult> => {
+    const rawType = String(args["type"] ?? "info");
+    const msgType: MessageToolType =
+      rawType === "result"
+        ? "result"
+        : rawType === "ask"
+          ? "ask"
+          : "info";
+    const msgText = String(args["text"] ?? "");
+
+    if (msgType === "result") {
+      return {
+        content: "Message sent to user.",
+        shouldBreak: true,
+        finalResult: msgText,
+        summary: `message(type=result)`,
+        // The text is ALSO duplicated into metadata so frontends that
+        // consume `tool_result` events (web UI, future IDE plugin) can
+        // read it the same way they read `type=info`. `finalResult`
+        // still drives task-summary semantics; this is just the
+        // user-facing-text view of the same value.
+        // (PR #63 review: without this, the web UI rendered
+        // "Message sent to user." as the assistant's final answer.)
+        metadata: { messageType: "result", text: msgText },
+      };
+    }
+
+    if (msgType === "ask") {
+      return await handleAsk(args, ctx, callMeta?.toolCallId, msgText);
+    }
+
+    return {
+      content: "Message sent to user.",
+      summary: `message(type=info)`,
+      metadata: { messageType: "info", text: msgText },
+    };
+};
+
+async function handleAsk(
+  args: Record<string, unknown>,
+  ctx: TaskContext,
+  toolCallId: string | undefined,
+  question: string,
+): Promise<ToolHandlerResult> {
+  if (!ctx.waitForReply) {
+    return {
+      content:
+        "Error: ask is not available in this task — no waitForReply callback wired. " +
+        "Either run without --no-interaction, or fall back to `result` and let the user follow up.",
+      error: "no_wait_for_reply",
+      summary: "message(type=ask) refused (non-interactive)",
+    };
+  }
+  if (!toolCallId) {
+    return {
+      content: "Error: ask requires a tool call id but none was provided.",
+      error: "missing_tool_call_id",
+      summary: "message(type=ask) refused (no id)",
+    };
+  }
+
+  const optionsRaw = args["options"];
+  const options =
+    Array.isArray(optionsRaw)
+      ? optionsRaw.filter((o): o is string => typeof o === "string")
+      : undefined;
+  const selectionRaw = args["selectionType"];
+  const selectionType: "single" | "multiple" | undefined =
+    selectionRaw === "multiple" || selectionRaw === "single" ? selectionRaw : undefined;
+
+  // waitForReply REJECTS when the ask is aborted — usually by either
+  // (a) the operator clicking Stop, or (b) the operator sending a
+  // new chat message in the same session before replying (the
+  // orchestrator routes that case through `abortAsksForTask` so the
+  // pending ask can wind down cleanly instead of stranding the task
+  // in `waiting_for_reply` forever). Either way we turn it into a
+  // structured tool_result so the LLM sees "the ask was abandoned"
+  // (and not a generic tool-execution crash) and can pivot to the
+  // new user message it'll find in the next iteration's context.
+  type Reply = Awaited<ReturnType<NonNullable<TaskContext["waitForReply"]>>>;
+  let reply: Reply;
+  try {
+    reply = await ctx.waitForReply({
+      toolCallId,
+      question,
+      ...(options && options.length > 0 ? { options } : {}),
+      ...(selectionType !== undefined ? { selectionType } : {}),
+    });
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    return {
+      content:
+        `[Ask was abandoned before the user replied: ${reason}. ` +
+        `If a new user message follows in the conversation, treat it as the operator's new direction; ` +
+        `otherwise do NOT re-issue the same question.]`,
+      error: "ask_aborted",
+      summary: "message(type=ask) aborted",
+      metadata: {
+        messageType: "ask",
+        question,
+        ...(options && options.length > 0 ? { options } : {}),
+        ...(selectionType !== undefined ? { selectionType } : {}),
+        aborted: true,
+        abortReason: reason,
+      },
+    };
+  }
+
+  return {
+    content: reply.content || "(empty reply)",
+    summary: `message(type=ask) → reply (${reply.content.length} chars)`,
+    metadata: {
+      messageType: "ask",
+      question,
+      ...(options && options.length > 0 ? { options } : {}),
+      ...(selectionType !== undefined ? { selectionType } : {}),
+      replyContent: reply.content,
+      ...(reply.attachments && reply.attachments.length > 0
+        ? { replyAttachments: reply.attachments }
+        : {}),
+    },
+  };
+}

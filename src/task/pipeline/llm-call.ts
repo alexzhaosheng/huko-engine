@@ -1,0 +1,320 @@
+/**
+ * server/engine/task/pipeline/llm-call.ts
+ *
+ * The LLM call step of the task loop.
+ *
+ * What happens inside a single call:
+ *   1. Build messages: system prompt + session LLM context + maybe a
+ *      transient language-drift reminder.
+ *   2. appendDraft an empty assistant entry -> assistant_started event.
+ *   3. Wire dual abort signals (master + currentLlmAbort).
+ *   4. Invoke the LLM with onPartial. Each delta emitted as a HukoEvent
+ *      and the DB row throttled-synced.
+ *   5. Drain any in-flight partial flush.
+ *   6. Final write via update({final:true}) -> assistant_complete.
+ *   7. commitToContext.
+ *   8. Token bookkeeping.
+ */
+
+import { invoke } from "../../llm/invoke.js";
+import type { LLMCallOptions, LLMTurnResult, PartialEvent } from "../../llm/types.js";
+import type { TaskContext } from "../../internal/TaskContext.js";
+import { EntryKind } from "../../shared/types.js";
+import { maybeBuildLanguageDriftReminder } from "../language-reminder.js";
+import { injectTaskBoundaryReminder } from "../task-boundary.js";
+import { padOrphanToolCalls } from "./pad-orphan-tool-calls.js";
+import { getEngineConfig } from "../../config/state.js";
+
+// ─── Result type ──────────────────────────────────────────────────────────────
+
+export type LLMCallOutcome =
+  | { kind: "ok"; entryId: number; result: LLMTurnResult }
+  | {
+      kind: "aborted";
+      /**
+       * Why the call aborted:
+       *  - `interjected` — user typed a new message while this call was
+       *    in flight (chat REPL); the loop retries with fresh context.
+       *  - `stopped` — masterAbort fired (user Ctrl+C / orchestrator.stop);
+       *    the task ends with status `stopped`.
+       *  - `timeout` — no stream chunk arrived within
+       *    `config.task.llmIdleTimeoutMs`. The provider held the socket
+       *    but never sent data; we gave up. The task ends with status
+       *    `failed`.
+       */
+      reason: "interjected" | "stopped" | "timeout";
+    };
+
+// ─── Streaming throttle ───────────────────────────────────────────────────────
+
+const DB_FLUSH_MS = 100;
+
+// ─── Heartbeat ────────────────────────────────────────────────────────────────
+
+/**
+ * How often to emit `llm_progress_tick` while waiting on the LLM. The
+ * tick is only emitted when no stream chunk has arrived in the same
+ * window — so streaming responses produce zero ticks. The point is
+ * keeping pipe consumers (e.g. another huko's bash tool, watching for
+ * idle output) aware that we're alive during the slow time-to-first-
+ * token gap on thinking models. 10s is comfortably under the bash
+ * tool's 30s default idle timeout.
+ */
+const HEARTBEAT_INTERVAL_MS = 10_000;
+
+// ─── Public API ───────────────────────────────────────────────────────────────
+
+export async function callLLM(ctx: TaskContext): Promise<LLMCallOutcome> {
+  const sc = ctx.sessionContext;
+
+  // ── 1. Build messages ────────────────────────────────────────────────────
+  // Includes a transient language-drift reminder when the recent context
+  // tail is dominated by content in a different script than the task's
+  // working language. The reminder is NOT persisted and NOT pushed onto
+  // SessionContext.llmContext — each call recomputes whether to inject.
+  const baseMessages = sc.getMessages();
+  // Safety net: synthesise a tool_result for any persisted assistant
+  // tool_call that was never paired (page refresh during ask, daemon
+  // crash, etc.). Without this, providers return 400 — see
+  // server/engine/task/pipeline/pad-orphan-tool-calls.ts. No-op on the >99%
+  // happy path (same array reference returned).
+  const padded = padOrphanToolCalls(baseMessages);
+  // Task-boundary marker: when a session has accumulated prior tasks,
+  // splice a single transient `system_reminder` just before the
+  // current task's first message so the LLM doesn't re-execute
+  // historical work. Transient — never persisted; recomputed every
+  // call from the live (messages, currentTaskId) pair so it always
+  // reflects the active task. See server/engine/task/task-boundary.ts.
+  const bounded = injectTaskBoundaryReminder(padded, ctx.taskId);
+  const driftReminder = maybeBuildLanguageDriftReminder(
+    bounded,
+    ctx.workingLanguage,
+  );
+  const messages = [
+    { role: "system" as const, content: ctx.systemPrompt },
+    ...bounded,
+    ...(driftReminder ? [driftReminder] : []),
+  ];
+
+  // ── 2. Draft assistant entry ─────────────────────────────────────────────
+  const entryId = await sc.appendDraft({
+    taskId: ctx.taskId,
+    kind: EntryKind.AiMessage,
+    role: "assistant",
+    content: "",
+  });
+
+  // ── 3. Abort wiring ──────────────────────────────────────────────────────
+  const llmAbort = new AbortController();
+  ctx.currentLlmAbort = llmAbort;
+  const onMasterAbort = () => llmAbort.abort();
+  if (ctx.masterAbort.signal.aborted) {
+    llmAbort.abort();
+  } else {
+    ctx.masterAbort.signal.addEventListener("abort", onMasterAbort, { once: true });
+  }
+
+  // ── 4. Streaming buffers + throttled DB sync ─────────────────────────────
+  let content = "";
+  let thinking = "";
+  let dbDirty = false;
+  let lastDbFlush = 0;
+  let pendingDbFlush: ReturnType<typeof setTimeout> | null = null;
+  let inflightFlush: Promise<void> | null = null;
+  let lastChunkAt = Date.now();
+  const callStart = lastChunkAt;
+
+  const flushDb = (): void => {
+    if (!dbDirty) return;
+    dbDirty = false;
+    lastDbFlush = Date.now();
+    inflightFlush = sc
+      .update({
+        entryId,
+        taskId: ctx.taskId,
+        content,
+        ...(thinking ? { metadata: { thinking }, mergeMetadata: true } : {}),
+      })
+      .catch(() => {
+        /* swallow — DB sync is best-effort during streaming; final flush is authoritative */
+      });
+  };
+
+  const onPartial = (e: PartialEvent): void => {
+    lastChunkAt = Date.now();
+    if (e.type === "content") {
+      content += e.delta;
+      sc.emit({
+        type: "assistant_content_delta",
+        entryId,
+        taskId: ctx.taskId,
+        sessionId: ctx.sessionId,
+        sessionType: ctx.sessionType,
+        delta: e.delta,
+      });
+    } else {
+      thinking += e.delta;
+      sc.emit({
+        type: "assistant_thinking_delta",
+        entryId,
+        taskId: ctx.taskId,
+        sessionId: ctx.sessionId,
+        sessionType: ctx.sessionType,
+        delta: e.delta,
+      });
+    }
+    dbDirty = true;
+
+    const now = Date.now();
+    if (now - lastDbFlush >= DB_FLUSH_MS) {
+      flushDb();
+    } else if (!pendingDbFlush) {
+      pendingDbFlush = setTimeout(() => {
+        pendingDbFlush = null;
+        flushDb();
+      }, DB_FLUSH_MS - (now - lastDbFlush));
+    }
+  };
+
+  // ── 4b. Heartbeat timer + idle-timeout watchdog ──────────────────────────
+  // The interval runs every HEARTBEAT_INTERVAL_MS and does TWO things:
+  //
+  //   (a) Emit `llm_progress_tick` when no chunk has arrived in the
+  //       window — streaming responses produce zero ticks, but a long
+  //       silent pre-stream wait (thinking models) sends a tick every
+  //       10s so pipe consumers (e.g. another huko's bash tool watching
+  //       for idle output) know we're alive.
+  //
+  //   (b) When idle exceeds `config.task.llmIdleTimeoutMs`, abort the
+  //       call. This catches the failure mode observed in hukoDev
+  //       session 4 task 28: the provider held the TCP socket open
+  //       without sending any data and `await invoke(...)` hung
+  //       indefinitely. Without this watchdog, the task spins forever
+  //       because nothing else triggers llmAbort.
+  //
+  // We flag `idleTimedOut` so the catch block below can distinguish
+  // "user stopped" / "interjected" from "we gave up". `AbortError` is
+  // identical in all three cases at the fetch layer.
+  const idleTimeoutMs = (ctx.engine?.config ?? getEngineConfig()).task.llmIdleTimeoutMs;
+  let idleTimedOut = false;
+
+  const heartbeatTimer = setInterval(() => {
+    const idle = Date.now() - lastChunkAt;
+
+    // (b) Idle timeout — only honoured when the operator has it enabled
+    // (config value > 0). Once fired, signal the abort and let the
+    // interval keep running until cleanup; the next tick will no-op
+    // because we'll be in the catch path.
+    if (idleTimeoutMs > 0 && idle >= idleTimeoutMs && !idleTimedOut) {
+      idleTimedOut = true;
+      llmAbort.abort();
+      return;
+    }
+
+    // (a) Heartbeat tick — only when no chunk arrived in the window.
+    if (idle < HEARTBEAT_INTERVAL_MS) return;
+    sc.emit({
+      type: "llm_progress_tick",
+      entryId,
+      taskId: ctx.taskId,
+      sessionId: ctx.sessionId,
+      sessionType: ctx.sessionType,
+      elapsedMs: Date.now() - callStart,
+    });
+  }, HEARTBEAT_INTERVAL_MS);
+  heartbeatTimer.unref?.();
+
+  // ── 5. Invoke ────────────────────────────────────────────────────────────
+  let result: LLMTurnResult;
+  try {
+    const callOptions: LLMCallOptions = {
+      protocol: ctx.protocol,
+      baseUrl: ctx.baseUrl,
+      apiKey: ctx.apiKey,
+      model: ctx.modelId,
+      messages,
+      tools: ctx.tools,
+      toolCallMode: ctx.toolCallMode,
+      thinkLevel: ctx.thinkLevel,
+      signal: llmAbort.signal,
+      onPartial,
+      ...(ctx.headers !== undefined ? { headers: ctx.headers } : {}),
+      ...(ctx.extras !== undefined ? { extras: ctx.extras } : {}),
+    };
+    result = await invoke(callOptions);
+  } catch (err: unknown) {
+    clearInterval(heartbeatTimer);
+    if (pendingDbFlush) clearTimeout(pendingDbFlush);
+    ctx.masterAbort.signal.removeEventListener("abort", onMasterAbort);
+    ctx.currentLlmAbort = null;
+
+    if (inflightFlush) {
+      await inflightFlush;
+      inflightFlush = null;
+    }
+
+    if (isAbort(err)) {
+      // Our own watchdog tripped — provider held the socket without
+      // sending data. Distinct from user-initiated stops so the loop
+      // can fail the task instead of looping or quietly ending.
+      if (idleTimedOut) {
+        return { kind: "aborted", reason: "timeout" };
+      }
+      if (ctx.masterAbort.signal.aborted) {
+        return { kind: "aborted", reason: "stopped" };
+      }
+      return { kind: "aborted", reason: "interjected" };
+    }
+    throw err;
+  }
+
+  clearInterval(heartbeatTimer);
+  if (pendingDbFlush) clearTimeout(pendingDbFlush);
+  ctx.masterAbort.signal.removeEventListener("abort", onMasterAbort);
+  ctx.currentLlmAbort = null;
+
+  if (inflightFlush) {
+    await inflightFlush;
+    inflightFlush = null;
+  }
+
+  // ── 6. Final flush ──────────────────────────────────────────────────────
+  const finalMetadata: Record<string, unknown> = {};
+  if (result.thinking) finalMetadata["thinking"] = result.thinking;
+  if (result.toolCalls.length > 0) finalMetadata["toolCalls"] = result.toolCalls;
+  finalMetadata["usage"] = result.usage;
+
+  await sc.update({
+    entryId,
+    taskId: ctx.taskId,
+    content: result.content,
+    metadata: finalMetadata,
+    mergeMetadata: true,
+    final: true,
+  });
+
+  // ── 7. Commit to LLM context ─────────────────────────────────────────────
+  sc.commitToContext({
+    entryId,
+    kind: EntryKind.AiMessage,
+    role: "assistant",
+    content: result.content,
+    ...(result.toolCalls.length > 0 ? { toolCalls: result.toolCalls } : {}),
+    ...(result.thinking ? { thinking: result.thinking } : {}),
+  });
+
+  // ── 8. Token bookkeeping ─────────────────────────────────────────────────
+  ctx.addTokens(result.usage);
+  ctx.iterationCount += 1;
+
+  return { kind: "ok", entryId, result };
+}
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function isAbort(err: unknown): boolean {
+  if (err instanceof Error) {
+    return err.name === "AbortError" || /aborted/i.test(err.message);
+  }
+  return false;
+}

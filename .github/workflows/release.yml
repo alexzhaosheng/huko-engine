@@ -1,0 +1,59 @@
+# Release — on a `v*` tag push, build + publish to npm.
+#
+# Cutting a release (see docs/RELEASE.md for the full checklist):
+#   1. Bump version in package.json + commit on main
+#   2. `git tag v0.1.0 && git push --tags`
+#   3. This workflow runs prepublishOnly (check + test + build) then
+#      `npm publish --provenance --access public`.
+#
+# Requires repo secret NPM_TOKEN — an npm automation token with publish
+# rights on @alexzhaosheng. Provenance attestation needs id-token: write.
+
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  publish:
+    name: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write   # required for npm provenance attestation
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: "https://registry.npmjs.org"
+          cache: npm
+
+      - name: Install deps
+        run: npm ci
+
+      - name: Verify tag matches package.json
+        # Catch the "tagged v0.2.0 but package.json still says 0.1.0" mistake
+        # BEFORE we ship a mismatched version.
+        run: |
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          if [ "$PKG_VERSION" != "$TAG_VERSION" ]; then
+            echo "::error::package.json version ($PKG_VERSION) does not match git tag ($TAG_VERSION)"
+            exit 1
+          fi
+          echo "Publishing version $PKG_VERSION"
+
+      - name: Publish to npm
+        # prepublishOnly (in package.json) runs check + test + build.
+        # --provenance attests "this tarball came from this exact CI run".
+        # --access public is required for first publish to a scoped name.
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
