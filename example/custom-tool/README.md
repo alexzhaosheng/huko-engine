@@ -1,8 +1,7 @@
 # example/custom-tool
 
-How the host adds its own tool. Same pattern app-studio uses for
-`write_definition_file` and huko-cli uses for `browser` /
-`share_file`.
+How the host adds its own tool. Same pattern huko-cli uses for
+`browser` / `share_file`.
 
 ## What it shows
 

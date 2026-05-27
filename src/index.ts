@@ -69,8 +69,8 @@ export type { Emitter } from "./internal/SessionContext.js";
 
 /**
  * The execution context passed to every tool handler. Host tool
- * authors (cli's browser/share_file, app-studio's write_definition_file)
- * receive a `TaskContext` argument and read structured fields off it
+ * authors (cli's browser/share_file is the reference) receive a
+ * `TaskContext` argument and read structured fields off it
  * (working directory, session id, emit helpers, policy state, …).
  *
  * The class itself stays under `src/internal/` — its constructor +

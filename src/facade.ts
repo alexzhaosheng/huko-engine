@@ -16,7 +16,7 @@
  *     its `SessionContext` cache, the current live task, the ask /
  *     decision registries, and the event subscribers. Two entry points:
  *       - `runTurn(input)` returns `AgentTurnResult` (the await-the-end
- *         shape app-studio uses)
+ *         shape — one HTTP request → one turn → one JSON response)
  *       - `startTurn(input)` returns `TaskHandle` (the fire-and-track
  *         shape daemon orchestrators use)
  *
@@ -188,8 +188,8 @@ export type HukoEngineOptions = {
    * record and the text formatter renders a yellow warning.
    *
    * Recovery itself is fully automatic; this callback ONLY surfaces
-   * what was found. Embedding hosts (app-studio, in-memory tests)
-   * typically omit it. Persistence implementations that don't
+   * what was found. Embedding hosts (in-memory tests, short-lived
+   * processes) typically omit it. Persistence implementations that don't
    * implement `listNonTerminalTasks` skip the scan entirely and the
    * callback never fires.
    *
@@ -269,7 +269,7 @@ export type HukoAgentOptions = {
    * Pairs with `expandArgs` for the inverse on tool args.
    *
    * cli wires `scrubAndRecord` from its security/scrubber.ts here.
-   * Embedding hosts (app-studio) can leave it unset for pass-through.
+   * Embedding hosts that don't need scrubbing can leave it unset.
    */
   scrubText?: (text: string) => Promise<string>;
   /**
@@ -353,8 +353,8 @@ export type TaskHandle = {
 
 /**
  * High-level `runTurn` result — startTurn + await + collected events.
- * Kept for embedding hosts (app-studio) that want a one-shot batch
- * result without subscribing to streaming events.
+ * Kept for embedding hosts that want a one-shot batch result without
+ * subscribing to streaming events (e.g. a synchronous HTTP handler).
  */
 export type AgentTurnResult = {
   sessionId: number;
@@ -866,8 +866,8 @@ export class HukoAgent {
 
   /**
    * Convenience: collect events into a buffer, start the turn, await
-   * completion, return the summary + events. The shape app-studio uses
-   * (one HTTP request → one runTurn → one JSON response).
+   * completion, return the summary + events. Useful when one HTTP
+   * request maps to one turn that returns one JSON response.
    */
   async runTurn(input: StartTurnInput): Promise<AgentTurnResult> {
     const events: HukoEvent[] = [];

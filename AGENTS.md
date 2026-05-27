@@ -60,12 +60,9 @@ the engine drives the loop. ESM-only, Node 20+.
 - [`example/web-server/`](example/web-server/) — Node http + SSE,
   streaming events to a browser
 
-For real-world host integrations:
-
-- [huko-cli](https://github.com/alexzhaosheng/huko) — daemon, web UI,
-  scheduler, file-share. The maximal example.
-- [app-studio](https://github.com/alexzhaosheng/app-studio) —
-  web studio host built on the same facade.
+For a real-world host integration, see
+[huko-cli](https://github.com/alexzhaosheng/huko) — daemon, web UI,
+scheduler, file-share. The maximal example.
 
 ## Where to look for reference docs
 

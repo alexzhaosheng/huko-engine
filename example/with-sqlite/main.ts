@@ -40,8 +40,8 @@ const persistence = new SqliteAgentPersistence(dbPath);
 
 // Sqlite handle is exposed for host-side queries that the engine's
 // narrow `AgentPersistence` interface doesn't cover (session lists,
-// search, etc.). cli + app-studio both build richer surfaces on top
-// of this raw handle.
+// search, etc.). Real hosts wrap this raw handle in a richer surface;
+// huko-cli's SessionPersistence is the reference.
 const priorCount = (persistence.db
   .prepare("SELECT COUNT(*) as n FROM sessions")
   .get() as { n: number }).n;

@@ -22,8 +22,8 @@ For design rationale on the public facade, see
 - prompt assembly primitives;
 - persistence interfaces and shared protocol types.
 
-It must stay embeddable by multiple hosts, currently `huko-cli` and the planned
-`app-studio`.
+It must stay embeddable by any Node host. The reference host integration
+is `huko-cli`; the facade must not lock in CLI-specific assumptions.
 
 ---
 
@@ -32,10 +32,13 @@ It must stay embeddable by multiple hosts, currently `huko-cli` and the planned
 Engine code must not import host infrastructure:
 
 - no HTTP, Express, Socket.IO, or tRPC;
-- no concrete database clients such as drizzle or better-sqlite3;
+- no concrete database clients such as drizzle or better-sqlite3
+  (the bundled `SqliteAgentPersistence` uses better-sqlite3 only because
+  it lives inside the engine package and ships as one of the persistence
+  options);
 - no DOM, React, browser globals, or frontend code;
 - no CLI command parsing or config-file layout assumptions;
-- no app-studio host/runtime assumptions.
+- no host-product-specific runtime assumptions.
 
 Engine code may import:
 
@@ -161,11 +164,11 @@ Host packages collect IO-backed context and pass it into engine prompt builders.
 
 ## 6. Compatibility rule
 
-Every engine API change must consider both hosts:
+Every engine API change must:
 
 - update or preserve current `huko-cli` behavior;
-- keep the shape general enough for `app-studio`;
-- avoid adding CLI-specific or app-studio-specific concepts to engine types
+- keep the shape general enough for arbitrary embedding hosts;
+- avoid adding CLI-specific or host-specific concepts to engine types
   unless they are truly kernel concepts.
 
 ---

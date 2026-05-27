@@ -3,8 +3,7 @@
  *
  * Shows the `engine.registerTool({...})` pattern host integrations
  * use to extend the agent's surface beyond the bundled foundational
- * tools. Same shape app-studio uses for `write_definition_file`
- * and huko-cli uses for `browser` / `share_file`.
+ * tools. Same shape huko-cli uses for `browser` / `share_file`.
  *
  * The example tool is a tiny in-memory todo list. The agent can
  * `todo(action="add", text=...)`, `todo(action="list")`, or

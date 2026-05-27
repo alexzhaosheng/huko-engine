@@ -22,8 +22,8 @@
  * cli already has? That one is cli's product-specific extension —
  * scheduler-owned sessions, redaction substitutions, resume UI
  * surface, etc. The engine doesn't need those to run an agent. A
- * narrow surface is what lets app-studio (and future hosts) implement
- * the contract without re-implementing cli's product features.
+ * narrow surface is what lets future hosts implement the contract
+ * without re-implementing cli's product features.
  */
 
 import type { PersistFn, UpdateFn } from "../internal/SessionContext.js";
@@ -174,7 +174,7 @@ export interface AgentPersistence {
    *
    * Implementations that don't support transactions can omit this; the
    * facade falls back to a two-step createTask + persist, which is fine
-   * for short-lived embedding hosts (app-studio HTTP requests, tests).
+   * for short-lived embedding hosts (HTTP request handlers, tests).
    *
    * Returns both the new task id and the new entry id; the facade
    * passes `entryId` to SessionContext.append as `knownEntryId` so the

@@ -155,8 +155,8 @@ storage, multi-tenant sharded DB, custom audit). See
 ### `runTurn(input) → Promise<AgentTurnResult>`
 
 Convenience: starts the turn, awaits completion, collects events into
-an array, returns the summary + events. The shape app-studio uses
-(one HTTP request → one runTurn → one JSON response):
+an array, returns the summary + events. Useful when a single HTTP
+request maps to a single turn that returns a single JSON response:
 
 ```ts
 const result = await agent.runTurn({ message: "..." });

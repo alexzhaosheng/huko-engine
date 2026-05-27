@@ -11,11 +11,11 @@
  *
  *   import "@alexzhaosheng/huko-engine/task/tools/index.js";
  *
- * Per-instance hosts (app-studio, post-step-6 cli) also get them via
- * the facade's `engine.resolveTool` global fallback — no host code
- * has to import this aggregator explicitly unless it wants the global
- * registry populated (some tests do; cli's bootstrap does, for
- * back-compat with the pre-facade getToolsForLLM consumers).
+ * Per-instance hosts also get them via the facade's
+ * `engine.resolveTool` global fallback — no host code has to import
+ * this aggregator explicitly unless it wants the global registry
+ * populated (some tests do; cli's bootstrap does, for back-compat
+ * with the pre-facade getToolsForLLM consumers).
  */
 
 import { registerServerTool } from "./registry.js";
