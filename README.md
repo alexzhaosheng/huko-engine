@@ -813,3 +813,9 @@ Release process is documented in [`docs/RELEASE.md`](docs/RELEASE.md)
 
 CI runs on every push and PR across Linux / macOS / Windows × Node
 24 (see `.github/workflows/ci.yml`).
+
+---
+
+## License
+
+MIT — see [`LICENSE`](LICENSE).
