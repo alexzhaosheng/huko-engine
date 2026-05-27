@@ -786,6 +786,13 @@ may shift between releases without a deprecation cycle.
   and the orchestrator wiring around `engine.startTurn` /
   `agent.respondToAsk` are all worth reading if you're embedding
   the engine into a daemon-style product.
+- **[docs/cookbook.md](docs/cookbook.md)** — copy-pasteable recipes
+  for common patterns (switching providers, custom tools, sqlite
+  persistence, ask/answer flow, skills, scheduled tasks).
+- **[AGENTS.md](AGENTS.md)** — guidance for AI assistants helping
+  developers integrate this engine into their projects.
+- **[example/](example/)** — runnable end-to-end demos: cli-chat,
+  with-sqlite, custom-tool, web-server.
 - **[docs/public-api-facade.md](docs/public-api-facade.md)** —
   why the facade looks like this, the design tradeoffs, and the
   migration steps the engine went through to reach this shape.

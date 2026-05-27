@@ -76,6 +76,9 @@
     "test": "node --import tsx --test \"tests/*.test.ts\"",
     "build": "tsc -p tsconfig.build.json",
     "example:cli-chat": "tsx example/cli-chat/main.ts",
+    "example:with-sqlite": "tsx example/with-sqlite/main.ts",
+    "example:custom-tool": "tsx example/custom-tool/main.ts",
+    "example:web-server": "tsx example/web-server/main.ts",
     "prepublishOnly": "npm run check && npm run test && npm run build"
   },
   "keywords": [
