@@ -43,7 +43,7 @@ const persistence = new SqliteAgentPersistence(dbPath);
 // search, etc.). cli + app-studio both build richer surfaces on top
 // of this raw handle.
 const priorCount = (persistence.db
-  .prepare("SELECT COUNT(*) as n FROM chat_sessions")
+  .prepare("SELECT COUNT(*) as n FROM sessions")
   .get() as { n: number }).n;
 
 const engine = await createHukoEngine({ persistence });
