@@ -17,6 +17,10 @@ real host. For the smallest possible demo see
 
 ## Quick start
 
+```sh
+npm install @alexzhaosheng/huko-engine
+```
+
 > Prefer reading runnable code? [`example/cli-chat/`](example/cli-chat/)
 > is the same shape as the snippet below, wired into a stdin/stdout
 > chat loop with every foundational tool turned on. About 75 lines.
@@ -78,11 +82,7 @@ awaiting the scan (defaults still apply).
 
 ---
 
-## Install
-
-```sh
-npm install @alexzhaosheng/huko-engine
-```
+## Install requirements
 
 ESM-only; Node 20+. Native `better-sqlite3` is bundled — `npm install`
 fetches a prebuilt binary for common platforms (linux/macos/windows
