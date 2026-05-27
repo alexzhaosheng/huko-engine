@@ -10,11 +10,12 @@ This README is a usage guide. For the design rationale see
 package-internal rules see [`CLAUDE.md`](CLAUDE.md).
 
 A reference host implementation lives in the
-[**huko-cli**](https://github.com/alexzhaosheng/huko) repo — its
-`packages/huko-cli/` shows a full daemon + CLI built on this engine
-(orchestrator, scheduler, daemon transport, web UI, browser tool,
-file-share, etc.). Reach for it when you want a worked example of
-how each engine seam gets wired into a real host.
+[**huko-cli**](https://github.com/alexzhaosheng/huko) repo — a full
+daemon + CLI built on this engine (orchestrator, scheduler, daemon
+transport, web UI, browser tool, file-share, etc.). Reach for it when
+you want a worked example of how each engine seam gets wired into a
+real host. For the smallest possible demo see
+[`example/cli-chat/`](example/cli-chat/) in this repo.
 
 ---
 
@@ -666,9 +667,9 @@ blocks:
 | `defaultBestPracticesProvider` | Ready-to-use `BestPracticesProvider` walking the bundled map only (the one installed by default) |
 
 The [huko-cli](https://github.com/alexzhaosheng/huko) repo's
-`packages/huko-cli/src/task/best-practices.ts` is a worked example
-of wrapping the engine helpers with project + user filesystem
-override layers (~50 lines total).
+`src/task/best-practices.ts` is a worked example of wrapping the
+engine helpers with project + user filesystem override layers
+(~50 lines total).
 
 ---
 
@@ -724,8 +725,8 @@ Enforced two ways:
    sibling file inside `src/`. pnpm's per-package install rejects
    undeclared imports at install time; Node's resolver rejects them
    at runtime.
-2. **`tests/engine-boundary.test.ts`** in the cli package walks
-   engine sources and greps imports as a belt-and-braces check.
+2. **`tests/engine-boundary.test.ts`** in this repo walks engine
+   sources and greps imports as a belt-and-braces check.
 
 ---
 
