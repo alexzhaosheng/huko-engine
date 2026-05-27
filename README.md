@@ -21,6 +21,10 @@ real host. For the smallest possible demo see
 
 ## Quick start
 
+> Prefer reading runnable code? [`example/cli-chat/`](example/cli-chat/)
+> is the same shape as the snippet below, wired into a stdin/stdout
+> chat loop with every foundational tool turned on. About 75 lines.
+
 ```ts
 import {
   createHukoEngine,
@@ -66,11 +70,6 @@ engine ships:
 | Foundational tools auto-registered | bash / glob / grep / plan / message / read_file / write_file / edit_file / delete_file / move_file / list_dir / web_fetch / web_search are all resolvable by name. Allow-list to expose. Opt out with `foundationalTools: false`. |
 | `defaultBestPracticesProvider` | The plan tool's `tool_result` grows an "Expert Checklist" block for the 4 bundled capabilities (`coding`, `writing`, `research`, `analysis`) when an agent's plan phase tags one. Opt out with `hostHooks: { bestPracticesProvider: null }`. |
 | Automatic orphan-recovery scan | At construction, engine scans persistence for tasks left in non-terminal state from a crashed previous run; marks them failed; injects synthetic `tool_result` rows for any dangling tool_calls so the next conversation continuation on the same session doesn't 400 on strict providers. Silent unless host passes `onOrphanRecovered`. `MemoryAgentPersistence` skips the scan. |
-
-Want this as a runnable terminal demo? See
-[`example/cli-chat/`](example/cli-chat/) — same shape with stdin
-input, streamed output, and every foundational tool turned on. About
-75 lines.
 
 Daemons / orchestrators with live streaming, mid-flight stop, and
 operator response routing reach for `startTurn` instead of
