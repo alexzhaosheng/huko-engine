@@ -5,10 +5,6 @@ framework, safety policy evaluator, skill loader, prompt assembler,
 persistence. Drop it into any Node host process to run capable
 agents through a small, opinionated facade.
 
-This README is a usage guide. For the design rationale see
-[`docs/public-api-facade.md`](docs/public-api-facade.md); for
-package-internal rules see [`CLAUDE.md`](CLAUDE.md).
-
 A reference host implementation lives in the
 [**huko-cli**](https://github.com/alexzhaosheng/huko) repo — a full
 daemon + CLI built on this engine (orchestrator, scheduler, daemon
