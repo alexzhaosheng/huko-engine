@@ -8,7 +8,7 @@
  * replace those — they can only INSERT additional content at one of
  * the defined positions.
  *
- * Three positions:
+ * Four positions:
  *
  *   "after-skills"           — right after the operator skills block,
  *                              before project context. Use for host
@@ -20,10 +20,21 @@
  *                              just before the cache boundary +
  *                              current-date line. The default; matches
  *                              today's `extraOverlays: string[]` slot.
+ *   "volatile"               — AFTER the cache boundary, alongside the
+ *                              current-date line. Use for per-turn
+ *                              content whose bytes change on every
+ *                              call — e.g. "user is currently looking
+ *                              at record X", "form values right now",
+ *                              cron next-run countdown. Putting these
+ *                              in "tail" silently kills the prompt
+ *                              cache because every turn's tail bytes
+ *                              differ.
  *
- * All three positions sit INSIDE the prompt-cache-covered prefix —
- * overlays don't go before the agent-loop / tool-use blocks because
- * that would invalidate prompt cache across hosts sharing the base.
+ * The first three positions sit INSIDE the prompt-cache-covered
+ * prefix — overlays don't go before the agent-loop / tool-use blocks
+ * because that would invalidate prompt cache across hosts sharing the
+ * base. "volatile" is explicitly OUTSIDE the cached prefix and is
+ * never expected to be byte-stable across turns.
  *
  * Naming: each overlay carries a `name` for traceability (showing up
  * in debug renders, future cache-key derivation). The engine doesn't
@@ -31,7 +42,11 @@
  * they appear in the overlays array.
  */
 
-export type OverlayPosition = "after-skills" | "after-project-context" | "tail";
+export type OverlayPosition =
+  | "after-skills"
+  | "after-project-context"
+  | "tail"
+  | "volatile";
 
 export type PromptOverlay = {
   /** Stable identifier — debugging, tracing, prompt-cache invalidation. */
@@ -45,7 +60,7 @@ export type PromptOverlay = {
 export const DEFAULT_OVERLAY_POSITION: OverlayPosition = "tail";
 
 /**
- * Split an overlays array into the three position buckets. Used by
+ * Split an overlays array into the four position buckets. Used by
  * `assembleSystemPrompt` to insert at the right point in the canonical
  * order. Returns trimmed content strings; empty overlays are skipped.
  */
@@ -56,6 +71,7 @@ export function bucketOverlaysByPosition(
     "after-skills": [],
     "after-project-context": [],
     tail: [],
+    volatile: [],
   };
   for (const overlay of overlays) {
     const trimmed = overlay.content.trim();

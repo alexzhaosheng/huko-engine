@@ -177,3 +177,100 @@ describe("prompt overlays — position slotting", () => {
     assert.equal(withEmpty, baseline, "all-empty overlays should not add anything");
   });
 });
+
+describe("prompt overlays — volatile position (post-cache-boundary)", () => {
+  // The cache-boundary sentinel sits in `current-date` line; everything
+  // strictly before it is the prefix that providers' prompt caches try
+  // to hit byte-for-byte. The whole point of the volatile slot is to
+  // let hosts attach per-turn changing content WITHOUT shifting that
+  // prefix. The pin: changing volatile content must not change ANY
+  // byte at or before the boundary.
+
+  const CACHE_BOUNDARY_MARKER = "The current date is";
+
+  it("volatile overlay renders AFTER the cache boundary + current-date line", () => {
+    const out = assembleSystemPrompt({
+      ...BASE_INPUT,
+      overlays: [
+        { name: "tail-x", content: "<tail>T</tail>", position: "tail" },
+        { name: "vol-x", content: "<volatile>V</volatile>", position: "volatile" },
+      ],
+    });
+
+    const tailIdx = out.indexOf("<tail>T</tail>");
+    const dateIdx = out.indexOf(CACHE_BOUNDARY_MARKER);
+    const volIdx = out.indexOf("<volatile>V</volatile>");
+
+    assert.ok(tailIdx > 0, "tail overlay should render");
+    assert.ok(dateIdx > tailIdx, "current-date boundary follows tail overlays");
+    assert.ok(volIdx > dateIdx, "volatile overlay follows the cache boundary");
+  });
+
+  it("changing volatile content leaves the cache prefix byte-identical", () => {
+    const promptA = assembleSystemPrompt({
+      ...BASE_INPUT,
+      overlays: [
+        { name: "tail-stable", content: "<tail>STABLE</tail>", position: "tail" },
+        { name: "live", content: "snapshot A — selectedId=record-1", position: "volatile" },
+      ],
+    });
+    const promptB = assembleSystemPrompt({
+      ...BASE_INPUT,
+      overlays: [
+        { name: "tail-stable", content: "<tail>STABLE</tail>", position: "tail" },
+        { name: "live", content: "snapshot B — selectedId=record-42 (much longer text here)", position: "volatile" },
+      ],
+    });
+
+    // The prefix runs from the start through (and including) the
+    // current-date line. Everything after must be allowed to differ;
+    // everything up to and including it must NOT.
+    const cutA = promptA.indexOf(CACHE_BOUNDARY_MARKER);
+    const cutB = promptB.indexOf(CACHE_BOUNDARY_MARKER);
+    assert.ok(cutA > 0 && cutB > 0, "boundary marker present in both renders");
+
+    // Find the end of the current-date line in each.
+    const endA = promptA.indexOf("\n", cutA);
+    const endB = promptB.indexOf("\n", cutB);
+    const prefixA = endA > 0 ? promptA.slice(0, endA) : promptA.slice(0, cutA + CACHE_BOUNDARY_MARKER.length);
+    const prefixB = endB > 0 ? promptB.slice(0, endB) : promptB.slice(0, cutB + CACHE_BOUNDARY_MARKER.length);
+
+    assert.equal(
+      prefixA,
+      prefixB,
+      "the cache-stable prefix MUST be byte-identical regardless of volatile content",
+    );
+    assert.notEqual(promptA, promptB, "tails do still differ");
+  });
+
+  it("multiple volatile overlays render in input order, all after the boundary", () => {
+    const out = assembleSystemPrompt({
+      ...BASE_INPUT,
+      overlays: [
+        { name: "v1", content: "<v1>first</v1>", position: "volatile" },
+        { name: "v2", content: "<v2>second</v2>", position: "volatile" },
+      ],
+    });
+
+    const dateIdx = out.indexOf(CACHE_BOUNDARY_MARKER);
+    const v1Idx = out.indexOf("<v1>first</v1>");
+    const v2Idx = out.indexOf("<v2>second</v2>");
+
+    assert.ok(dateIdx > 0);
+    assert.ok(v1Idx > dateIdx, "first volatile is after the boundary");
+    assert.ok(v2Idx > v1Idx, "second volatile follows the first in input order");
+  });
+
+  it("volatile overlays don't appear at all when none are provided (no extra trailing blocks)", () => {
+    const baseline = assembleSystemPrompt({ ...BASE_INPUT });
+    const expectedTail = baseline.trimEnd();
+    // The base prompt should end with the current-date line — adding
+    // the volatile slot must not introduce a trailing separator when
+    // the bucket is empty.
+    assert.match(
+      expectedTail,
+      /The current date is .+\.$/,
+      "with no volatile overlays, the prompt ends right after the current-date line",
+    );
+  });
+});

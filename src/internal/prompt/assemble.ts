@@ -26,7 +26,12 @@
  *  13. <project_context>        — AGENTS.md / CLAUDE.md / HUKO.md (already read)
  *  14. <scheduled_task>         — when running cron-driven
  *  15. host extra overlays      — e.g. <setup_assistant> from huko-cli
- *  16. SYSTEM_PROMPT_CACHE_BOUNDARY + current-date line
+ *      (positions: after-skills / after-project-context / tail)
+ *  --- SYSTEM_PROMPT_CACHE_BOUNDARY ---
+ *  16. current-date line
+ *  17. host VOLATILE overlays   — per-turn-changing host content (e.g.
+ *      app-studio's live-screen-state). Emitted AFTER the boundary so
+ *      the prompt cache covers only the stable prefix above.
  *
  * Why this order:
  *   - Stable framing at the top so prefix-cache hits cover it.
@@ -34,6 +39,11 @@
  *     setup_assistant) sit at the cache-stable tail of the prefix.
  *   - Volatile current-date line goes AFTER the cache boundary so the
  *     Anthropic prompt cache covers only the stable prefix.
+ *   - Volatile host overlays go AFTER the boundary too — without this
+ *     slot, hosts had to pick between "in the cache and silently
+ *     killing prefix hits every turn" (today's `tail`) and "not in the
+ *     system prompt at all" (no overlay). Now there's a third option
+ *     that says "send it, but acknowledge it changes every turn".
  */
 
 import { SYSTEM_PROMPT_CACHE_BOUNDARY } from "../../llm/cache-boundary.js";
@@ -161,8 +171,14 @@ export function assembleSystemPrompt(input: AssembleSystemPromptInput): string {
   }
   parts.push(...buckets["tail"]);
 
+  // ── Cache boundary ─────────────────────────────────────────────────────
+  // Everything above this line is the cache-stable prefix that prompt
+  // caches (OpenAI auto-prefix, Anthropic ephemeral, DeepSeek auto) try
+  // to hit byte-for-byte. Everything below is volatile and is expected
+  // to differ across turns.
   const date = formatCurrentDate(input.currentDate ?? new Date());
   parts.push(`${SYSTEM_PROMPT_CACHE_BOUNDARY}\nThe current date is ${date}.`);
+  parts.push(...buckets["volatile"]);
 
   return parts.join("\n\n");
 }
