@@ -159,8 +159,72 @@ for (const factory of factories) {
       assert.deepEqual(context[2], {
         role: "tool",
         content: "tool output",
-        tool_call_id: "call-1",
+        // camelCase — matches `LLMMessage.toolCallId` (the engine's
+        // internal contract). The OpenAI adapter rewrites this to
+        // wire-format `tool_call_id` at send time; padOrphanToolCalls
+        // and the rest of the pipeline all read camelCase.
+        toolCallId: "call-1",
       });
+    });
+
+    it("loadInitialContext reconstructs assistant.toolCalls + thinking from metadata", async () => {
+      // Pins the fix for the LLM-replay bug where assistant messages
+      // came back without their `toolCalls` field, so providers (and
+      // the in-memory padOrphanToolCalls safety net) couldn't see the
+      // assistant ↔ tool pairing — every cross-task replay 400'd with
+      // "tool message must be a response to a preceding tool_calls".
+      p = factory.make();
+      const sessionId = await p.createSession({});
+      const taskId = await p.createTask({
+        chatSessionId: sessionId,
+        modelId: "test-model",
+        toolCallMode: "native",
+        thinkLevel: "off",
+      });
+
+      const toolCalls = [
+        { id: "call-X", name: "bash", arguments: { command: "ls" } },
+      ];
+      await p.persist({
+        taskId,
+        sessionId,
+        sessionType: "chat",
+        kind: "user_message",
+        role: "user",
+        content: "list files",
+      });
+      await p.persist({
+        taskId,
+        sessionId,
+        sessionType: "chat",
+        kind: "ai_message",
+        role: "assistant",
+        content: "",
+        thinking: "I'll run ls.",
+        metadata: { toolCalls },
+      });
+      await p.persist({
+        taskId,
+        sessionId,
+        sessionType: "chat",
+        kind: "tool_result",
+        role: "tool",
+        content: "file1\nfile2",
+        toolCallId: "call-X",
+      });
+
+      const context = await p.loadInitialContext(sessionId, "chat");
+      assert.equal(context.length, 3);
+
+      const asst = context[1]!;
+      assert.equal(asst.role, "assistant");
+      assert.equal(asst.content, "");
+      assert.deepEqual(asst.toolCalls, toolCalls, "toolCalls round-tripped from metadata");
+      assert.equal(asst.thinking, "I'll run ls.");
+
+      const toolMsg = context[2]!;
+      assert.equal(toolMsg.role, "tool");
+      assert.equal(toolMsg.toolCallId, "call-X");
     });
 
     it("loadInitialContext filters out non-LLM-visible entries (status_notice + system_prompt)", async () => {

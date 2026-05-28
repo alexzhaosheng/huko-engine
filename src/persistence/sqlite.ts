@@ -34,7 +34,7 @@ import { mkdirSync } from "node:fs";
 import path from "node:path";
 
 import type { PersistFn, UpdateFn } from "../internal/SessionContext.js";
-import type { LLMMessage } from "../llm/types.js";
+import type { LLMMessage, ToolCall } from "../llm/types.js";
 import {
   isLLMVisible,
   type EntryKind,
@@ -193,11 +193,16 @@ export class SqliteAgentPersistence implements AgentPersistence {
       role: "system" | "user" | "assistant" | "tool";
       content: string;
       toolCallId: string | null;
+      thinking: string | null;
+      metadata: string | null;
     };
 
     const rows = this.db
       .prepare(
-        `SELECT kind, role, content, tool_call_id AS toolCallId
+        `SELECT kind, role, content,
+                tool_call_id AS toolCallId,
+                thinking,
+                metadata
          FROM entries
          WHERE session_id = ? AND session_type = ?
          ORDER BY id ASC`,
@@ -207,15 +212,7 @@ export class SqliteAgentPersistence implements AgentPersistence {
     const messages: LLMMessage[] = [];
     for (const row of rows) {
       if (!isLLMVisible(row.kind as EntryKind)) continue;
-      if (row.role === "tool") {
-        messages.push({
-          role: "tool",
-          content: row.content,
-          ...(row.toolCallId !== null ? { tool_call_id: row.toolCallId } : {}),
-        });
-      } else {
-        messages.push({ role: row.role, content: row.content });
-      }
+      messages.push(rowToMessage(row));
     }
     return messages;
   }
@@ -407,5 +404,73 @@ export class SqliteAgentPersistence implements AgentPersistence {
     if (this.closed) return;
     this.db.close();
     this.closed = true;
+  }
+}
+
+/**
+ * Materialise one entry row into the `LLMMessage` shape that the rest
+ * of the engine consumes. Three branches:
+ *
+ *   - `role === "tool"`: synthesise a tool message with the canonical
+ *     `toolCallId` (camelCase) field. This is what `padOrphanToolCalls`
+ *     and the OpenAI adapter both read. Persisted column is
+ *     snake_case `tool_call_id` (the SQL schema), aliased to
+ *     `toolCallId` in the SELECT.
+ *   - `role === "assistant"`: reconstruct `toolCalls` and `thinking`
+ *     from the persisted metadata blob. Without `toolCalls` here,
+ *     replayed sessions lose the assistant ↔ tool pairing that
+ *     OpenAI / Anthropic strictly require — the next LLM call
+ *     400s with "tool message must be a response to a preceding
+ *     tool_calls" and the in-memory padding net can't help because
+ *     it relies on seeing the orphan `toolCalls` to pad them.
+ *   - other roles (`user`, `system`): plain content message.
+ */
+function rowToMessage(row: {
+  role: "system" | "user" | "assistant" | "tool";
+  content: string;
+  toolCallId: string | null;
+  thinking: string | null;
+  metadata: string | null;
+}): LLMMessage {
+  if (row.role === "tool") {
+    return {
+      role: "tool",
+      content: row.content,
+      ...(row.toolCallId !== null ? { toolCallId: row.toolCallId } : {}),
+    };
+  }
+  if (row.role === "assistant") {
+    const meta = parseAssistantMetadata(row.metadata);
+    return {
+      role: "assistant",
+      content: row.content,
+      ...(meta.toolCalls && meta.toolCalls.length > 0
+        ? { toolCalls: meta.toolCalls }
+        : {}),
+      ...(row.thinking && row.thinking.length > 0
+        ? { thinking: row.thinking }
+        : meta.thinking
+          ? { thinking: meta.thinking }
+          : {}),
+    };
+  }
+  return { role: row.role, content: row.content };
+}
+
+function parseAssistantMetadata(
+  raw: string | null,
+): { toolCalls?: ToolCall[]; thinking?: string } {
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw) as {
+      toolCalls?: ToolCall[];
+      thinking?: string;
+    };
+    return {
+      ...(Array.isArray(parsed.toolCalls) ? { toolCalls: parsed.toolCalls } : {}),
+      ...(typeof parsed.thinking === "string" ? { thinking: parsed.thinking } : {}),
+    };
+  } catch {
+    return {};
   }
 }

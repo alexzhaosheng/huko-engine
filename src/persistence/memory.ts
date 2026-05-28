@@ -13,7 +13,7 @@ import type {
   PersistFn,
   UpdateFn,
 } from "../internal/SessionContext.js";
-import type { LLMMessage } from "../llm/types.js";
+import type { LLMMessage, ToolCall } from "../llm/types.js";
 import { isLLMVisible, type EntryKind, type SessionType } from "../shared/types.js";
 
 import type {
@@ -195,12 +195,43 @@ export class MemoryAgentPersistence implements AgentPersistence {
   }
 }
 
+/**
+ * Materialise one entry row into the `LLMMessage` shape. Three
+ * branches:
+ *
+ *   - `role === "tool"`: synthesise a tool message with the canonical
+ *     `toolCallId` (camelCase) field. This is what `padOrphanToolCalls`
+ *     and the OpenAI adapter both read.
+ *   - `role === "assistant"`: reconstruct `toolCalls` and `thinking`
+ *     from the persisted metadata. Without `toolCalls` here, replayed
+ *     sessions lose the assistant ↔ tool pairing OpenAI / Anthropic
+ *     strictly require and the next LLM call 400s.
+ *   - other roles: plain content message.
+ */
 function entryToMessage(entry: EntryRow): LLMMessage {
   if (entry.role === "tool") {
     return {
       role: "tool",
       content: entry.content,
-      ...(entry.toolCallId !== null ? { tool_call_id: entry.toolCallId } : {}),
+      ...(entry.toolCallId !== null ? { toolCallId: entry.toolCallId } : {}),
+    };
+  }
+  if (entry.role === "assistant") {
+    const meta = entry.metadata ?? {};
+    const toolCalls = Array.isArray(meta["toolCalls"])
+      ? (meta["toolCalls"] as ToolCall[])
+      : undefined;
+    const metaThinking =
+      typeof meta["thinking"] === "string"
+        ? (meta["thinking"] as string)
+        : undefined;
+    const thinking =
+      entry.thinking && entry.thinking.length > 0 ? entry.thinking : metaThinking;
+    return {
+      role: "assistant",
+      content: entry.content,
+      ...(toolCalls && toolCalls.length > 0 ? { toolCalls } : {}),
+      ...(thinking && thinking.length > 0 ? { thinking } : {}),
     };
   }
   return { role: entry.role, content: entry.content };
